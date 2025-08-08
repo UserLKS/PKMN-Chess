@@ -1,0 +1,346 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>Pokémon Chess</title>
+  <style>
+    :root{
+      --square: 72px;
+      --light: #f0d9b5;
+      --dark: #b58863;
+      --accent: #4f46e5;
+      --accent-2:#10b981;
+      --danger:#ef4444;
+    }
+    *{box-sizing:border-box}
+    body{
+      margin:0; font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, "Helvetica Neue", Arial, "Noto Sans", "Apple Color Emoji", "Segoe UI Emoji";
+      background:#0b1020; color:#e5e7eb;
+      display:flex; min-height:100vh; align-items:center; justify-content:center;
+    }
+    .app{display:grid; gap:16px; grid-template-columns: auto 320px; padding:24px; width:min(1200px, 98vw)}
+    .panel{background:#0f172a; border:1px solid #1f2a44; border-radius:16px; padding:16px; box-shadow: 0 10px 30px rgba(0,0,0,.3)}
+    .title{font-weight:800; letter-spacing:.5px; font-size:18px; margin-bottom:8px}
+
+    .board{ position:relative; border-radius:14px; overflow:hidden; border:4px solid #111827; box-shadow: 0 10px 30px rgba(0,0,0,.35)}
+    .grid{ display:grid; grid-template-columns: repeat(8, var(--square)); grid-template-rows: repeat(8, var(--square)); }
+    .sq{ width:var(--square); height:var(--square); display:flex; align-items:center; justify-content:center; position:relative; user-select:none }
+    .light{ background:var(--light) }
+    .dark { background:var(--dark) }
+    .sq.highlight{ outline: 3px solid var(--accent); outline-offset:-3px }
+    .sq.move{ box-shadow: inset 0 0 0 4px rgba(79,70,229,.75)}
+    .sq.cap::after{ content:""; position:absolute; inset:10px; border:3px dashed var(--danger); border-radius:8px }
+
+    .piece{ width:65px; height:65px; cursor:grab; filter: drop-shadow(0 6px 6px rgba(0,0,0,.4)); transition: transform .08s ease }
+    .piece:active{ cursor:grabbing; transform: scale(1.03) }
+
+    .captured{ display:flex; flex-wrap:wrap; gap:6px; min-height:48px }
+    .captured img{ width:36px; height:36px; filter:grayscale(.2) drop-shadow(0 2px 4px rgba(0,0,0,.4)) }
+    .row{ display:flex; align-items:center; gap:8px; margin:10px 0 }
+    button{ background:#111827; color:#e5e7eb; border:1px solid #26324f; border-radius:12px; padding:10px 14px; font-weight:700; cursor:pointer }
+    button:hover{ border-color:#3b4e7a }
+    .primary{ background:linear-gradient(135deg,var(--accent),#7c3aed); border:none }
+    .ok{ background:linear-gradient(135deg,var(--accent-2),#059669); border:none }
+    .bad{ background:linear-gradient(135deg,#ef4444,#b91c1c); border:none }
+    .card{ background:#0b1226; border:1px solid #1f2a44; padding:12px; border-radius:12px }
+    .pgn{ font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace; font-size:13px; line-height:1.4; color:#cbd5e1; white-space: pre-wrap }
+    .legend{ display:grid; grid-template-columns: repeat(8, var(--square)); gap:0 }
+    .legend div{ text-align:center; font-size:12px; color:#111827; font-weight:800; padding-top:4px }
+    .rank{ position:absolute; left:6px; top:6px; font-size:12px; font-weight:800; color:rgba(0,0,0,.45) }
+    .file{ position:absolute; right:6px; bottom:4px; font-size:12px; font-weight:800; color:rgba(0,0,0,.45) }
+    .turn{ font-weight:800 }
+    .info{ color:#9ca3af; font-size:14px }
+    .sprite-credit{ font-size:12px; color:#94a3b8 }
+    @media (max-width: 1000px){
+      .app{ grid-template-columns: 1fr; }
+    }
+  </style>
+</head>
+<body>
+  <div class="app">
+    <div class="panel">
+      <div class="title">Pokémon Chess</div>
+      <div class="info">Turn: <span id="turn" class="turn">white</span> <span id="status"></span></div>
+      <div id="board" class="board" aria-label="Chess board">
+        <div id="grid" class="grid" role="grid" aria-label="8 by 8 chessboard"></div>
+      </div>
+      <div class="legend" id="files"></div>
+      <div class="row">
+        <button id="undo">↶ Undo</button>
+        <button id="reset" class="bad">⟲ New Game</button>
+        <button id="flip" class="primary">⇵ Flip</button>
+        <button id="exportFen" class="ok">Export FEN</button>
+      </div>
+      <div class="row"><small class="sprite-credit">Sprites from PokéAPI sprites (non‑official; © Nintendo / Game Freak / Creatures). For private, non‑commercial use.</small></div>
+    </div>
+
+    <div class="panel">
+      <div class="title">Move List (PGN)</div>
+      <div class="card">
+        <div id="pgn" class="pgn"></div>
+      </div>
+      <div class="title" style="margin-top:12px">Captured – White</div>
+      <div id="capWhite" class="card captured"></div>
+      <div class="title" style="margin-top:12px">Captured – Black</div>
+      <div id="capBlack" class="card captured"></div>
+    </div>
+  </div>
+
+  <!-- chess.js for rules/validation -->
+  <script src="https://cdn.jsdelivr.net/npm/chess.js@1.0.0/chess.min.js"></script>
+  <script>
+    // --- CONFIG: map chess pieces to Pokémon sprite IDs (PokeAPI numeric IDs) ---
+    const SPRITES = {
+      // White pieces
+      'wP': 1,   // Bulbasaur
+      'wR': 95,  // Onix
+      'wN': 78,  // Rapidash
+      'wB': 65,  // Alakazam
+      'wQ': 150, // Mewtwo
+      'wK': 25,  // Pikachu
+      // Black pieces
+      'bP': 41,  // Zubat
+      'bR': 112, // Rhydon
+      'bN': 77,  // Ponyta
+      'bB': 282, // Gardevoir
+      'bQ': 6,   // Charizard
+      'bK': 94,  // Gengar
+    };
+
+    const spriteUrl = id => `https://raw.githubusercontent.com/PokeAPI/sprites/master/sprites/pokemon/${id}.png`;
+
+    // Board helpers
+    const files = ['a','b','c','d','e','f','g','h'];
+    const ranks = ['8','7','6','5','4','3','2','1'];
+
+    // State
+    const game = new Chess();
+    let flipped = false; // if true, show black at bottom
+
+    const gridEl = document.getElementById('grid');
+    const pgnEl  = document.getElementById('pgn');
+    const turnEl = document.getElementById('turn');
+    const statusEl = document.getElementById('status');
+    const capWhiteEl = document.getElementById('capWhite');
+    const capBlackEl = document.getElementById('capBlack');
+
+    // Build static file labels row
+    const filesEl = document.getElementById('files');
+    function drawFiles(){
+      filesEl.innerHTML = '';
+      const seq = flipped ? [...files].reverse() : files;
+      for(const f of seq){
+        const d = document.createElement('div');
+        d.textContent = f;
+        filesEl.appendChild(d);
+      }
+    }
+
+    function squareColor(fileIndex, rankIndex){
+      return (fileIndex + rankIndex) % 2 === 0 ? 'light' : 'dark';
+    }
+
+    function algebraic(fileIndex, rankIndex){
+      const f = files[fileIndex];
+      const r = ranks[rankIndex];
+      return f + r;
+    }
+
+    function uiSquareId(sq){ return `sq-${sq}`; }
+
+    function createSquare(fileIndex, rankIndex){
+      const sq = algebraic(fileIndex, rankIndex);
+      const d = document.createElement('div');
+      d.className = `sq ${squareColor(fileIndex, rankIndex)}`;
+      d.id = uiSquareId(sq);
+      d.dataset.square = sq;
+
+      // rank/file labels
+      if((!flipped && fileIndex === 0) || (flipped && fileIndex === 7)){
+        const rk = document.createElement('div'); rk.className='rank'; rk.textContent = ranks[rankIndex]; d.appendChild(rk);
+      }
+      if((!flipped && rankIndex === 7) || (flipped && rankIndex === 0)){
+        const fl = document.createElement('div'); fl.className='file'; fl.textContent = files[fileIndex]; d.appendChild(fl);
+      }
+
+      // Allow dropping
+      d.addEventListener('dragover', e=> e.preventDefault());
+      d.addEventListener('drop', onDrop);
+      d.addEventListener('click', onSquareClick);
+      return d;
+    }
+
+    function drawBoard(){
+      gridEl.innerHTML='';
+      const fileSeq = flipped ? [...files].reverse() : files;
+      const rankSeq = flipped ? [...ranks].reverse() : ranks;
+      for(let r=0; r<8; r++){
+        for(let f=0; f<8; f++){
+          const realFileIdx = files.indexOf(fileSeq[f]);
+          const realRankIdx = ranks.indexOf(rankSeq[r]);
+          const sq = createSquare(realFileIdx, realRankIdx);
+          gridEl.appendChild(sq);
+        }
+      }
+      drawPieces();
+      drawFiles();
+      updateStatus();
+    }
+
+    function imgForPiece(p){
+      const key = (p.color==='w'?'w':'b') + p.type.toUpperCase();
+      const id = SPRITES[key];
+      const img = document.createElement('img');
+      img.src = spriteUrl(id);
+      img.alt = `${p.color==='w'?'White':'Black'} ${pieceName(p.type)}`;
+      img.className = 'piece';
+      img.draggable = true;
+      img.addEventListener('dragstart', e => onDragStart(e, p));
+      img.addEventListener('click', e => onPieceClick(e, p));
+      return img;
+    }
+
+    function pieceName(t){
+      return {p:'Pawn', r:'Rook', n:'Knight', b:'Bishop', q:'Queen', k:'King'}[t];
+    }
+
+    function drawPieces(){
+      // clear all
+      document.querySelectorAll('.sq').forEach(s => s.innerHTML = s.innerHTML.replace(/<img[\s\S]*?>/g, ''));
+      // place pieces
+      const board = game.board();
+      for(let r=0; r<8; r++){
+        for(let f=0; f<8; f++){
+          const p = board[r][f];
+          if(!p) continue;
+          const sq = files[f] + ranks[7-r]; // chess.js indexing
+          const el = document.getElementById(uiSquareId(sq));
+          el && el.appendChild(imgForPiece(p));
+        }
+      }
+    }
+
+    function updateStatus(){
+      turnEl.textContent = game.turn()==='w' ? 'white' : 'black';
+      let txt = '';
+      if(game.isCheckmate()) txt = '— Checkmate!';
+      else if(game.isDraw()) txt = '— Draw';
+      else if(game.inCheck()) txt = '— Check!';
+      statusEl.textContent = txt;
+      pgnEl.textContent = game.pgn();
+    }
+
+    // Selection & move highlighting
+    let selected = null; // square like 'e2'
+
+    function clearHighlights(){
+      document.querySelectorAll('.sq').forEach(el=>{
+        el.classList.remove('highlight','move','cap');
+      });
+    }
+
+    function highlightMoves(from){
+      clearHighlights();
+      const moves = game.moves({square: from, verbose:true});
+      for(const m of moves){
+        const el = document.getElementById(uiSquareId(m.to));
+        if(!el) continue;
+        el.classList.add('move');
+        if(m.flags.includes('c')) el.classList.add('cap');
+      }
+      const fromEl = document.getElementById(uiSquareId(from));
+      fromEl && fromEl.classList.add('highlight');
+    }
+
+    function onPieceClick(e, p){
+      const square = e.target.parentElement.dataset.square;
+      // select piece only if it's that side's turn
+      if((game.turn()==='w' && p.color!=='w') || (game.turn()==='b' && p.color!=='b')) return;
+      selected = square;
+      highlightMoves(square);
+    }
+
+    function onSquareClick(e){
+      const to = e.currentTarget.dataset.square;
+      if(!selected) return;
+      tryMove(selected, to);
+    }
+
+    function onDragStart(e, p){
+      const square = e.target.parentElement.dataset.square;
+      if((game.turn()==='w' && p.color!=='w') || (game.turn()==='b' && p.color!=='b')){ e.preventDefault(); return; }
+      selected = square;
+      highlightMoves(square);
+      e.dataTransfer.setData('text/plain', square);
+    }
+
+    function onDrop(e){
+      const from = e.dataTransfer.getData('text/plain');
+      const to = e.currentTarget.dataset.square;
+      tryMove(from, to);
+    }
+
+    const captured = { w:[], b:[] };
+
+    function tryMove(from, to){
+      const legal = game.moves({square: from, verbose:true}).find(m=>m.to===to);
+      if(!legal){ clearHighlights(); selected=null; return; }
+
+      // Handle promotion (default to Queen, offer prompt)
+      let promotion = 'q';
+      if(legal.promotion){
+        const choice = prompt('Promote to (q,r,b,n):', 'q');
+        if(['q','r','b','n'].includes((choice||'').toLowerCase())) promotion = choice.toLowerCase();
+      }
+
+      const prevTurn = game.turn();
+      const move = game.move({ from, to, promotion });
+      if(move){
+        // capture tracking
+        if(move.captured){
+          captured[prevTurn].push(move.captured);
+          drawCaptured();
+        }
+        selected = null; clearHighlights();
+        drawPieces(); updateStatus();
+      }
+    }
+
+    function drawCaptured(){
+      capWhiteEl.innerHTML=''; capBlackEl.innerHTML='';
+      for(const t of captured.w){
+        const key = 'b'+t.toUpperCase();
+        const img = document.createElement('img'); img.src = spriteUrl(SPRITES[key]); capWhiteEl.appendChild(img);
+      }
+      for(const t of captured.b){
+        const key = 'w'+t.toUpperCase();
+        const img = document.createElement('img'); img.src = spriteUrl(SPRITES[key]); capBlackEl.appendChild(img);
+      }
+    }
+
+    // Controls
+    document.getElementById('undo').addEventListener('click', ()=>{
+      const last = game.undo();
+      if(last){ drawPieces(); updateStatus(); }
+    });
+    document.getElementById('reset').addEventListener('click', ()=>{
+      game.reset(); captured.w=[]; captured.b=[]; drawCaptured(); drawBoard();
+    });
+    document.getElementById('flip').addEventListener('click', ()=>{
+      flipped = !flipped; drawBoard();
+    });
+    document.getElementById('exportFen').addEventListener('click', ()=>{
+      navigator.clipboard.writeText(game.fen());
+      const old = statusEl.textContent; statusEl.textContent = '— FEN copied to clipboard'; setTimeout(()=>statusEl.textContent=old, 1200);
+    });
+
+    // Initialize
+    function buildBoard(){
+      gridEl.style.setProperty('--square', '72px');
+      drawBoard(); drawCaptured();
+    }
+    buildBoard();
+  </script>
+</body>
+</html>
